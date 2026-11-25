@@ -72,7 +72,7 @@ function createApp(dbFile = path.join(__dirname, 'data.db')) {
     const total = one(`SELECT count(*) c FROM jobs j WHERE ${where.join(' AND ')}`, ...p).c;
     const list = q(`SELECT j.*, (SELECT count(*) FROM applications a WHERE a.job_id=j.id) applicants,
       ${user ? '(SELECT count(*) FROM applications a WHERE a.job_id=j.id AND a.seeker_id=' + Number(user.id) + ') applied,(SELECT count(*) FROM saved s WHERE s.job_id=j.id AND s.user_id=' + Number(user.id) + ') is_saved' : '0 applied, 0 is_saved'}
-      FROM jobs j WHERE ${where.join(' AND ')} ORDER BY j.id DESC LIMIT ? OFFSET ?`, ...p, limit, offset);
+      FROM jobs j WHERE ${where.join(' AND ')} ORDER BY ${query.sort === 'salary' ? 'coalesce(j.salary_max,j.salary_min,0) DESC, j.id DESC' : 'j.id DESC'} LIMIT ? OFFSET ?`, ...p, limit, offset);
     return { total, jobs: list };
   });
   route('GET', '/api/jobs/mine', ({ user }) => {
@@ -161,6 +161,24 @@ function createApp(dbFile = path.join(__dirname, 'data.db')) {
     if (query.q) { const t = '%' + query.q.toLowerCase() + '%'; where.push("(lower(name) LIKE ? OR lower(coalesce(headline,'')) LIKE ? OR lower(coalesce(skills,'')) LIKE ? OR lower(coalesce(bio,'')) LIKE ?)"); p.push(t, t, t, t); }
     if (query.city) { where.push('city=?'); p.push(query.city); }
     return q(`SELECT id,name,headline,skills,city,bio FROM users WHERE ${where.join(' AND ')} AND (headline IS NOT NULL AND headline!='') ORDER BY id DESC LIMIT 50`, ...p);
+  });
+  route('GET', '/api/stats', () => ({
+    jobs: one("SELECT count(*) c FROM jobs WHERE status='open'").c,
+    companies: one("SELECT count(DISTINCT company) c FROM jobs WHERE status='open'").c,
+    seekers: one("SELECT count(*) c FROM users WHERE role='seeker'").c,
+    applications: one('SELECT count(*) c FROM applications').c,
+  }));
+  route('GET', '/api/companies', () => q("SELECT company, count(*) jobs, min(city) city, max(coalesce(salary_max,salary_min,0)) top_salary FROM jobs WHERE status='open' GROUP BY company ORDER BY jobs DESC, top_salary DESC LIMIT 12"));
+  route('GET', '/api/categories', () => q("SELECT category, count(*) n FROM jobs WHERE status='open' AND category IS NOT NULL GROUP BY category ORDER BY n DESC"));
+  route('GET', '/api/hr/stats', ({ user }) => {
+    need(user, 'hr');
+    const by = {}; for (const r of q('SELECT a.status s, count(*) n FROM applications a JOIN jobs j ON j.id=a.job_id WHERE j.hr_id=? GROUP BY a.status', user.id)) by[r.s] = r.n;
+    return {
+      open: one("SELECT count(*) c FROM jobs WHERE hr_id=? AND status='open'", user.id).c,
+      closed: one("SELECT count(*) c FROM jobs WHERE hr_id=? AND status='closed'", user.id).c,
+      applicants: Object.values(by).reduce((a, b) => a + b, 0), by,
+      recent: q('SELECT a.id,a.status,a.created_at,u.name,u.headline,j.title,j.id job_id FROM applications a JOIN jobs j ON j.id=a.job_id JOIN users u ON u.id=a.seeker_id WHERE j.hr_id=? ORDER BY a.id DESC LIMIT 5', user.id),
+    };
   });
   route('GET', '/api/meta', () => ({
     types: TYPES, statuses: STATUSES,
